@@ -1,0 +1,422 @@
+<?xml version="1.0" encoding="UTF-8"?><sqlb_project><db path="warehouse.db" readonly="0" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/><attached/><window><main_tabs open="structure browser pragmas query" current="3"/></window><tab_structure><column_width id="0" width="300"/><column_width id="1" width="0"/><column_width id="2" width="100"/><column_width id="3" width="135"/><column_width id="4" width="0"/><expanded_item id="0" parent="1"/><expanded_item id="1" parent="1"/><expanded_item id="2" parent="1"/><expanded_item id="3" parent="1"/></tab_structure><tab_browse><table title=".Obiekty do przeglądania" custom_title="0" dock_id="1" table="0,24:Obiekty do przeglądania"/><dock_state state="000000ff00000000fd00000001000000020000000000000000fc0100000001fb000000160064006f0063006b00420072006f00770073006500310100000000ffffffff0000011800ffffff000000000000000000000004000000040000000800000008fc00000000"/><default_encoding codec=""/><browse_table_settings/></tab_browse><tab_sql><sql name="SQL 1*">
+
+-- ================================
+-- HURTOWNIA DANYCH - META HURTOWNIA
+-- Wersja dla SQLite
+-- UWAGA: przed uruchomieniem upewnij się, że pliki:
+--   hotel.db
+--   opinie.db
+--   platnosci.db
+-- znajdują się w tym samym katalogu.
+-- ================================
+
+ATTACH 'hotel.db' AS hotel;
+ATTACH 'opinie.db' AS opinie;
+ATTACH 'platnosci.db' AS platnosci;
+
+-- ================================
+-- SCHEMAT WYMIARÓW
+-- ================================
+
+CREATE TABLE DimHotel (
+    HotelKey     INTEGER PRIMARY KEY,
+    HotelID      INTEGER,
+    Nazwa        TEXT,
+    Miasto       TEXT,
+    Kraj         TEXT,
+    Region       TEXT,   -- Morze / Góry / Miasto biznesowe / Miasto turystyczne
+    Standard     INTEGER
+);
+
+CREATE TABLE DimKlient (
+    KlientKey    INTEGER PRIMARY KEY,
+    Email        TEXT,
+    Imie         TEXT,
+    Nazwisko     TEXT,
+    Segment      TEXT,
+    Kraj         TEXT
+);
+
+CREATE TABLE DimPokoj (
+    PokojKey     INTEGER PRIMARY KEY,
+    PokojID      INTEGER,
+    HotelID      INTEGER,
+    Typ          TEXT,
+    CenaZaNoc    REAL
+);
+
+CREATE TABLE DimCzas (
+    CzasKey      INTEGER PRIMARY KEY,
+    Data         TEXT,
+    Rok          INTEGER,
+    Miesiac      INTEGER,
+    Dzien        INTEGER,
+    Kwartal      INTEGER
+);
+
+CREATE TABLE DimKanal (
+    KanalKey     INTEGER PRIMARY KEY,
+    NazwaKanal   TEXT
+);
+
+CREATE TABLE DimMetodaPlatnosci (
+    MetodaKey    INTEGER PRIMARY KEY,
+    Metoda       TEXT
+);
+
+CREATE TABLE DimRodzajUslugi (
+    RodzajUslugiKey INTEGER PRIMARY KEY,
+    Rodzaj          TEXT
+);
+
+CREATE TABLE DimKryterium (
+    KryteriumKey INTEGER PRIMARY KEY,
+    Nazwa        TEXT
+);
+
+-- ================================
+-- SCHEMAT FAKTÓW (5 faktów)
+-- ================================
+
+CREATE TABLE FaktRezerwacja (
+    FaktRezerwacjaID INTEGER PRIMARY KEY,
+    RezerwacjaID     INTEGER,
+    HotelKey         INTEGER,
+    PokojKey         INTEGER,
+    KlientKey        INTEGER,
+    DataZlozeniaKey  INTEGER,
+    DataPrzyjazduKey INTEGER,
+    DataWyjazduKey   INTEGER,
+    KanalKey         INTEGER,
+    LiczbaGosci      INTEGER,
+    DlugoscPobytu    INTEGER,
+    CzyAnulowana     INTEGER
+);
+
+CREATE TABLE FaktPlatnosc (
+    FaktPlatnoscID   INTEGER PRIMARY KEY,
+    PlatnoscID       INTEGER,
+    RezerwacjaID     INTEGER,
+    HotelKey         INTEGER,
+    KlientKey        INTEGER,
+    CzasKey          INTEGER,
+    MetodaKey        INTEGER,
+    Kwota            REAL
+);
+
+CREATE TABLE FaktUslugaDodatkowa (
+    FaktUslugaID     INTEGER PRIMARY KEY,
+    UslugaID         INTEGER,
+    RezerwacjaID     INTEGER,
+    HotelKey         INTEGER,
+    KlientKey        INTEGER,
+    CzasKey          INTEGER,
+    RodzajUslugiKey  INTEGER,
+    Kwota            REAL
+);
+
+CREATE TABLE FaktOpinia (
+    FaktOpiniaID     INTEGER PRIMARY KEY,
+    OpiniaID         INTEGER,
+    HotelKey         INTEGER,
+    KlientKey        INTEGER,
+    CzasKey          INTEGER,
+    OcenaOgolna      INTEGER
+);
+
+CREATE TABLE FaktOcenaSzczegolowa (
+    FaktOcenaID      INTEGER PRIMARY KEY,
+    OcenaID          INTEGER,
+    OpiniaID         INTEGER,
+    HotelKey         INTEGER,
+    KlientKey        INTEGER,
+    CzasKey          INTEGER,
+    KryteriumKey     INTEGER,
+    Ocena            INTEGER
+);
+
+-- ================================
+-- ZAŁADOWNIE WYMIARÓW
+-- ================================
+
+-- DimHotel z dodaną klasyfikacją regionu
+INSERT INTO DimHotel (HotelID, Nazwa, Miasto, Kraj, Region, Standard)
+SELECT
+    h.HotelID,
+    h.Nazwa,
+    h.Miasto,
+    h.Kraj,
+    CASE
+        WHEN h.Miasto IN ('Gdańsk','Gdynia','Sopot','Kołobrzeg') THEN 'Morze'
+        WHEN h.Miasto IN ('Zakopane','Karpacz','Szklarska Poręba') THEN 'Góry'
+        WHEN h.Miasto IN ('Warszawa','Wrocław','Poznań') THEN 'Miasto biznesowe'
+        WHEN h.Miasto IN ('Kraków','Toruń') THEN 'Miasto turystyczne'
+        ELSE 'Inne'
+    END AS Region,
+    h.Standard
+FROM hotel.Hotel h;
+
+-- DimPokoj
+INSERT INTO DimPokoj (PokojID, HotelID, Typ, CenaZaNoc)
+SELECT
+    p.PokojID,
+    p.HotelID,
+    p.Typ,
+    p.CenaZaNoc
+FROM hotel.Pokoj p;
+
+-- DimKlient - scalony z klientów rezerwacyjnych i użytkowników opinii po e-mailu
+INSERT INTO DimKlient (Email, Imie, Nazwisko, Segment, Kraj)
+SELECT DISTINCT
+    Email,
+    Imie,
+    Nazwisko,
+    Segment,
+    Kraj
+FROM (
+    SELECT
+        k.Email AS Email,
+        k.Imie AS Imie,
+        k.Nazwisko AS Nazwisko,
+        k.Segment AS Segment,
+        k.KrajPochodzenia AS Kraj
+    FROM hotel.Klient k
+
+    UNION
+
+    SELECT
+        u.Email AS Email,
+        u.Imie AS Imie,
+        u.Nazwisko AS Nazwisko,
+        u.Segment AS Segment,
+        u.Kraj AS Kraj
+    FROM opinie.Uzytkownik u
+);
+
+-- DimKanal
+INSERT INTO DimKanal (NazwaKanal)
+SELECT DISTINCT r.Kanal
+FROM hotel.Rezerwacja r
+WHERE r.Kanal IS NOT NULL;
+
+-- DimMetodaPlatnosci
+INSERT INTO DimMetodaPlatnosci (Metoda)
+SELECT DISTINCT p.Metoda
+FROM platnosci.Platnosc p
+WHERE p.Metoda IS NOT NULL;
+
+-- DimRodzajUslugi
+INSERT INTO DimRodzajUslugi (Rodzaj)
+SELECT DISTINCT u.Rodzaj
+FROM platnosci.UslugaDodatkowa u
+WHERE u.Rodzaj IS NOT NULL;
+
+-- DimKryterium
+INSERT INTO DimKryterium (Nazwa)
+SELECT DISTINCT o.Kryterium
+FROM opinie.OcenaSzczegolowa o
+WHERE o.Kryterium IS NOT NULL;
+
+-- DimCzas - wszystkie unikalne daty ze źródeł
+INSERT INTO DimCzas (Data, Rok, Miesiac, Dzien, Kwartal)
+SELECT DISTINCT
+    d AS Data,
+    CAST(substr(d,1,4) AS INTEGER) AS Rok,
+    CAST(substr(d,6,2) AS INTEGER) AS Miesiac,
+    CAST(substr(d,9,2) AS INTEGER) AS Dzien,
+    ((CAST(substr(d,6,2) AS INTEGER)-1) / 3) + 1 AS Kwartal
+FROM (
+    SELECT DataZlozenia AS d FROM hotel.Rezerwacja
+    UNION
+    SELECT DataPrzyjazdu FROM hotel.Rezerwacja
+    UNION
+    SELECT DataWyjazdu FROM hotel.Rezerwacja
+    UNION
+    SELECT Data FROM platnosci.Platnosc
+    UNION
+    SELECT Data FROM opinie.Opinia
+)
+WHERE d IS NOT NULL;
+
+-- ================================
+-- ZAŁADOWNIE FAKTÓW
+-- ================================
+
+-- FaktRezerwacja
+INSERT INTO FaktRezerwacja (
+    RezerwacjaID,
+    HotelKey,
+    PokojKey,
+    KlientKey,
+    DataZlozeniaKey,
+    DataPrzyjazduKey,
+    DataWyjazduKey,
+    KanalKey,
+    LiczbaGosci,
+    DlugoscPobytu,
+    CzyAnulowana
+)
+SELECT
+    r.RezerwacjaID,
+    dh.HotelKey,
+    dp.PokojKey,
+    dk.KlientKey,
+    dz.CzasKey,
+    dpz.CzasKey,
+    dw.CzasKey,
+    dkana.KanalKey,
+    r.LiczbaGosci,
+    CAST(julianday(r.DataWyjazdu) - julianday(r.DataPrzyjazdu) AS INTEGER) AS DlugoscPobytu,
+    CASE WHEN r.Status = 'Anulowana' THEN 1 ELSE 0 END AS CzyAnulowana
+FROM hotel.Rezerwacja r
+JOIN hotel.Pokoj p
+    ON r.PokojID = p.PokojID
+JOIN DimPokoj dp
+    ON dp.PokojID = p.PokojID
+JOIN hotel.Hotel h
+    ON p.HotelID = h.HotelID
+JOIN DimHotel dh
+    ON dh.HotelID = h.HotelID
+JOIN hotel.Klient k
+    ON r.KlientID = k.KlientID
+JOIN DimKlient dk
+    ON dk.Email = k.Email
+JOIN DimCzas dz
+    ON dz.Data = r.DataZlozenia
+JOIN DimCzas dpz
+    ON dpz.Data = r.DataPrzyjazdu
+JOIN DimCzas dw
+    ON dw.Data = r.DataWyjazdu
+LEFT JOIN DimKanal dkana
+    ON dkana.NazwaKanal = r.Kanal;
+
+-- FaktPlatnosc
+INSERT INTO FaktPlatnosc (
+    PlatnoscID,
+    RezerwacjaID,
+    HotelKey,
+    KlientKey,
+    CzasKey,
+    MetodaKey,
+    Kwota
+)
+SELECT
+    p.PlatnoscID,
+    p.RezerwacjaID,
+    dh.HotelKey,
+    dk.KlientKey,
+    dc.CzasKey,
+    dm.MetodaKey,
+    p.Kwota
+FROM platnosci.Platnosc p
+JOIN hotel.Rezerwacja r
+    ON p.RezerwacjaID = r.RezerwacjaID
+JOIN hotel.Pokoj pok
+    ON r.PokojID = pok.PokojID
+JOIN hotel.Hotel h
+    ON pok.HotelID = h.HotelID
+JOIN DimHotel dh
+    ON dh.HotelID = h.HotelID
+JOIN hotel.Klient k
+    ON r.KlientID = k.KlientID
+JOIN DimKlient dk
+    ON dk.Email = k.Email
+JOIN DimCzas dc
+    ON dc.Data = p.Data
+JOIN DimMetodaPlatnosci dm
+    ON dm.Metoda = p.Metoda;
+
+-- FaktUslugaDodatkowa
+-- Za czas usługi przyjmujemy datę przyjazdu z rezerwacji
+INSERT INTO FaktUslugaDodatkowa (
+    UslugaID,
+    RezerwacjaID,
+    HotelKey,
+    KlientKey,
+    CzasKey,
+    RodzajUslugiKey,
+    Kwota
+)
+SELECT
+    u.UslugaID,
+    u.RezerwacjaID,
+    dh.HotelKey,
+    dk.KlientKey,
+    dc.CzasKey,
+    dru.RodzajUslugiKey,
+    u.Kwota
+FROM platnosci.UslugaDodatkowa u
+JOIN hotel.Rezerwacja r
+    ON u.RezerwacjaID = r.RezerwacjaID
+JOIN hotel.Pokoj pok
+    ON r.PokojID = pok.PokojID
+JOIN hotel.Hotel h
+    ON pok.HotelID = h.HotelID
+JOIN DimHotel dh
+    ON dh.HotelID = h.HotelID
+JOIN hotel.Klient k
+    ON r.KlientID = k.KlientID
+JOIN DimKlient dk
+    ON dk.Email = k.Email
+JOIN DimCzas dc
+    ON dc.Data = r.DataPrzyjazdu
+JOIN DimRodzajUslugi dru
+    ON dru.Rodzaj = u.Rodzaj;
+
+-- FaktOpinia
+INSERT INTO FaktOpinia (
+    OpiniaID,
+    HotelKey,
+    KlientKey,
+    CzasKey,
+    OcenaOgolna
+)
+SELECT
+    o.OpiniaID,
+    dh.HotelKey,
+    dk.KlientKey,
+    dc.CzasKey,
+    o.OcenaOgólna
+FROM opinie.Opinia o
+JOIN opinie.Uzytkownik u
+    ON o.UzytkownikID = u.UzytkownikID
+JOIN DimKlient dk
+    ON dk.Email = u.Email
+JOIN DimHotel dh
+    ON dh.HotelID = o.HotelID
+JOIN DimCzas dc
+    ON dc.Data = o.Data;
+
+-- FaktOcenaSzczegolowa
+INSERT INTO FaktOcenaSzczegolowa (
+    OcenaID,
+    OpiniaID,
+    HotelKey,
+    KlientKey,
+    CzasKey,
+    KryteriumKey,
+    Ocena
+)
+SELECT
+    os.OcenaID,
+    o.OpiniaID,
+    dh.HotelKey,
+    dk.KlientKey,
+    dc.CzasKey,
+    dkryt.KryteriumKey,
+    os.Ocena
+FROM opinie.OcenaSzczegolowa os
+JOIN opinie.Opinia o
+    ON os.OpiniaID = o.OpiniaID
+JOIN opinie.Uzytkownik u
+    ON o.UzytkownikID = u.UzytkownikID
+JOIN DimKlient dk
+    ON dk.Email = u.Email
+JOIN DimHotel dh
+    ON dh.HotelID = o.HotelID
+JOIN DimCzas dc
+    ON dc.Data = o.Data
+JOIN DimKryterium dkryt
+    ON dkryt.Nazwa = os.Kryterium;
+
+</sql><current_tab id="0"/></tab_sql></sqlb_project>
