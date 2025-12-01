@@ -183,6 +183,5 @@ GROUP BY
 -- 9. ODŁĄCZENIE BAZ
 ----------------------------------------------------------------------
 
-DETACH DATABASE hotel;
-DETACH DATABASE platnosci;
-
+--DETACH DATABASE hotel;
+--DETACH DATABASE platnosci;
